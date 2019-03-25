@@ -1,3 +1,5 @@
+import os
+
 from django.shortcuts import render
 from django.http import HttpResponseRedirect, JsonResponse
 from django import forms
@@ -5,7 +7,7 @@ import json
 from collections import defaultdict
 import requests
 
-HSE_API_ROOT = "http://hse-api-web/"
+HSE_API_ROOT = os.environ.get("HSELING_API_ROOT", "http://hse-api-web/")
 
 
 # Create your views here.
@@ -15,9 +17,8 @@ def web_index(request):
 
 
 def web_main(request):
-    # content = requests.get(HSE_API_ROOT)
-    return render(request, 'main.html',
-                  context={"status": request.GET.get('status')})
+    return render(request, 'corpus_main.html',
+                  context={})
 
 
 def web_status(request):
@@ -73,8 +74,8 @@ def handle_text_to_check(t):
     url = HSE_API_ROOT + "input_text"
     text = {"text": t}
     content = requests.post(url, json=json.dumps(text), headers={'content-type': 'application/json'})
-    # raise Exception("{0}".format(content.json()))
-    return content.json()['input_text']
+    content_json = content.json()
+    return content_json.get('input_text') # task id
 
 
 def handle_file_to_check(f):
@@ -84,17 +85,31 @@ def handle_file_to_check(f):
     return content.json().get('task_id')
 
 
-def handle_text_to_search(t, url, count):
-    text = {"text": t, "count": count}
+def handle_text_to_search(postdata, url):
+    if isinstance(postdata,dict):
+        if postdata.get('search_collocations'):
+            text = {"text": postdata['search_collocations'], "count": postdata.get("n"),
+                    "domain": postdata.get('search-domain')}
+        elif postdata.get('search'):
+            text = {"text": postdata['search']}
+        elif postdata.get('lemma1'):
+            text = {'text': postdata}
+    else:
+        text = {'text':postdata}
     content = requests.post(url, json=json.dumps(text), headers={'content-type': 'application/json'})
     return content.json()['found']
 
 
 def web_intext(request):
     if request.method == 'POST':
-        text = handle_text_to_check(request.POST['paste_text'])
-        return JsonResponse({"text": text})
+        task_id = handle_text_to_check(request.POST['paste_text'])
+        if task_id:
+            return HttpResponseRedirect('check?task_id=' + task_id)
 
+        else:
+            return JsonResponse({"error": "No task id"})
+    else:
+        return web_check(request)
 
 def web_check(request):
     return render(request, 'cat_check.html',
@@ -102,7 +117,7 @@ def web_check(request):
 
 
 def web_collocations(request):
-    return render(request, 'cat_collocations.html',
+    return render(request, 'collocations_info.html',
                   context={})
 
 
@@ -114,7 +129,7 @@ def make_sents(text):
         texts[found['id_text']][found['abs_sent_id']] += (' ' + (found['word']))
     out = []
     for k, v in texts.items():
-        metadata = handle_text_to_search(k, HSE_API_ROOT + 'search_metadata', '')
+        metadata = handle_text_to_search(k, HSE_API_ROOT + 'search_metadata')
         to_append = {"sents": []}
         to_append.update(metadata[0])
         for key, val in v.items():
@@ -128,8 +143,8 @@ def lex_gram_search(request):
     if request.POST['lemma1'].isalnum():  # на поиске пустых строк и пробелов подвисает, не надо их
         searched = request.POST['lemma1']
         if request.POST.get('lemma2'):
-            searched += ', {0}'.format('lemma2')
-        text = handle_text_to_search(request.POST, HSE_API_ROOT + 'search_text', '')
+            searched += ', {0}'.format(request.POST['lemma2'])
+        text = handle_text_to_search(request.POST, HSE_API_ROOT + 'search_text')
         out = make_sents(text)
 
     return out, searched
@@ -138,13 +153,13 @@ def lex_gram_search(request):
 def web_search(request):
     if request.method == 'POST':
         if request.POST.get('search'):
-            searched = request.POST['search']
-            if searched.isalnum():  # на поиске пустых строк и пробелов подвисает, не надо их
-                text = handle_text_to_search(searched, HSE_API_ROOT + 'search_text', '')
+            searched = request.POST
+            if searched['search'].isalnum():  # на поиске пустых строк и пробелов подвисает, не надо их
+                text = handle_text_to_search(searched, HSE_API_ROOT + 'search_text')
 
                 return render(request, 'search_results.html', context={"corpus_search": make_sents(text),
                                                                        "outtext": "По запросу {0} нашлись следующие примеры:".format(
-                                                                           searched)})
+                                                                           request.POST['search'])})
             else:
                 return render(request, 'search_results.html', context={"corpus_search": [],
                                                                        "outtext": "Пустой или некорректный запрос"})
@@ -167,13 +182,13 @@ def web_search(request):
 
 def web_search_collocations(request):
     if request.method == 'POST':
-        searched = request.POST['search_collocations']
-        count = request.POST.get('n')
-        if searched.isalnum():  # на поиске пустых строк и пробелов подвисает, не надо их
-            text = handle_text_to_search(searched, HSE_API_ROOT + 'search_collocations', count)
+        searched = request.POST
+        if searched['search_collocations'].isalnum():  # на поиске пустых строк и пробелов подвисает, не надо их
+            text = handle_text_to_search(searched, HSE_API_ROOT + 'search_collocations')
             return render(request, 'cat_collocations.html',
-                          context={"items": text, "searched": searched,
-                                   "out": "По запросу {0} нашлись следующие коллокации:".format(searched)})
+                          context={"items": text, "searched": searched['search_collocations'],
+                                   "out": "По запросу {0} нашлись следующие коллокации:".format(
+                                       searched['search_collocations'])})
         else:
             return render(request, 'cat_collocations.html',
                           context={"items": [], "out": "Пустой или некорректный запрос"})
